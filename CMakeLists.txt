@@ -90,3 +90,37 @@ target_link_libraries(robot_main
 pico_enable_stdio_usb(robot_main 1)
 pico_enable_stdio_uart(robot_main 1)
 pico_add_extra_outputs(robot_main)
+
+# ... existing code ...
+
+# IR Digital pulse width test
+add_executable(test_ir_digital
+    tests/test_ir_digital.c
+    src/sensors/ir_sensor.c
+)
+
+target_link_libraries(test_ir_digital 
+    pico_stdlib 
+    hardware_adc
+    hardware_gpio
+)
+
+pico_enable_stdio_usb(test_ir_digital 1)
+pico_enable_stdio_uart(test_ir_digital 1)
+pico_add_extra_outputs(test_ir_digital)
+
+# Two sensor demonstration (one analog, one digital)
+add_executable(test_ir_two_sensors_demo
+    tests/test_ir_two_sensors_demo.c
+    src/sensors/ir_sensor.c
+)
+
+target_link_libraries(test_ir_two_sensors_demo 
+    pico_stdlib 
+    hardware_adc
+    hardware_gpio
+)
+
+pico_enable_stdio_usb(test_ir_two_sensors_demo 1)
+pico_enable_stdio_uart(test_ir_two_sensors_demo 1)
+pico_add_extra_outputs(test_ir_two_sensors_demo)

@@ -1,18 +1,21 @@
 #ifndef ROBOT_CONFIG_H
 #define ROBOT_CONFIG_H
 
-// IR Sensor Pin Configuration
-#define LINE_SENSOR_PIN 26      // ADC0 - GP26
-#define BARCODE_SENSOR_PIN 27   // ADC1 - GP27
-
-// IR Sensor Calibrated Values (update with your measurements)
-#define WHITE_VALUE 210
-#define BLACK_VALUE 3000
-#define THRESHOLD 1605          // (WHITE_VALUE + BLACK_VALUE) / 2
+// ============ ANALOG IR SENSOR PINS (ADC) ============
+#define LINE_SENSOR_PIN 26      // ADC0 - GP26 (Analog)
+#define BARCODE_SENSOR_PIN 27   // ADC1 - GP27 (Analog)
 
 // ADC Configuration
 #define LINE_SENSOR_ADC_CHANNEL 0    // GP26 = ADC0
 #define BARCODE_SENSOR_ADC_CHANNEL 1 // GP27 = ADC1
+
+// ============ DIGITAL IR SENSOR PINS (GPIO) ============
+// For demonstrating digital signal/pulse width measurement
+#define IR_DIGITAL_PIN_1 8      // GP8 - Digital mode IR sensor
+#define IR_DIGITAL_PIN_2 9      // GP9 - Digital mode IR sensor
+
+// By default, use GP8 for single digital sensor demos
+#define IR_DIGITAL_PIN IR_DIGITAL_PIN_1
 
 // Sensor Reading Configuration
 #define SENSOR_SAMPLE_COUNT 5        // Number of samples to average
@@ -25,6 +28,11 @@
 #define MAX_BARCODE_ELEMENTS 100     // Maximum barcode elements to capture
 #define BARCODE_TRANSITION_THRESHOLD 500  // ADC difference for transitions
 #define BARCODE_END_TIMEOUT_US 10000 // Timeout for end of barcode (10ms)
+
+// IR Sensor Calibrated Values (update with your measurements)
+#define WHITE_VALUE 210
+#define BLACK_VALUE 3000
+#define THRESHOLD 1605          // (WHITE_VALUE + BLACK_VALUE) / 2
 
 // Motor pins (placeholders for teammates)
 #define MOTOR_LEFT_PIN1 2
