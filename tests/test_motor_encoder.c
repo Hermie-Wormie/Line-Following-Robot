@@ -1,6 +1,7 @@
 #include <stdio.h>
+#include <math.h>
 #include "pico/stdlib.h"
-#include "control/pid_controller.h"
+#include "control/motor_control.h"
 #include "control/wheel_encoder.h"
 #include "common/robot_config.h"
 
@@ -14,6 +15,7 @@
  * 3. Speed measurement
  * 4. Both motors together (synchronization)
  * 5. Distance measurement
+ * 6. Turning maneuvers
  */
 
 void print_separator(void) {
@@ -38,7 +40,7 @@ void test_motor_basic(void) {
     motor_set_speed(MOTOR_LEFT, 50);
     sleep_ms(2000);
     motor_stop(MOTOR_LEFT);
-    printf("   Left encoder count: %d\n", encoder_get_count(ENCODER_LEFT));
+    printf("   Left encoder count: %d\n", (int)encoder_get_count(ENCODER_LEFT));
     printf("   Distance: %.2f mm\n", encoder_get_distance_mm(ENCODER_LEFT));
     sleep_ms(500);
     
@@ -48,7 +50,7 @@ void test_motor_basic(void) {
     motor_set_speed(MOTOR_LEFT, -50);
     sleep_ms(2000);
     motor_stop(MOTOR_LEFT);
-    printf("   Left encoder count: %d\n", encoder_get_count(ENCODER_LEFT));
+    printf("   Left encoder count: %d\n", (int)encoder_get_count(ENCODER_LEFT));
     printf("   Distance: %.2f mm\n", encoder_get_distance_mm(ENCODER_LEFT));
     sleep_ms(500);
     
@@ -58,7 +60,7 @@ void test_motor_basic(void) {
     motor_set_speed(MOTOR_RIGHT, 50);
     sleep_ms(2000);
     motor_stop(MOTOR_RIGHT);
-    printf("   Right encoder count: %d\n", encoder_get_count(ENCODER_RIGHT));
+    printf("   Right encoder count: %d\n", (int)encoder_get_count(ENCODER_RIGHT));
     printf("   Distance: %.2f mm\n", encoder_get_distance_mm(ENCODER_RIGHT));
     sleep_ms(500);
     
@@ -68,7 +70,7 @@ void test_motor_basic(void) {
     motor_set_speed(MOTOR_RIGHT, -50);
     sleep_ms(2000);
     motor_stop(MOTOR_RIGHT);
-    printf("   Right encoder count: %d\n", encoder_get_count(ENCODER_RIGHT));
+    printf("   Right encoder count: %d\n", (int)encoder_get_count(ENCODER_RIGHT));
     printf("   Distance: %.2f mm\n", encoder_get_distance_mm(ENCODER_RIGHT));
     sleep_ms(500);
     
@@ -94,13 +96,17 @@ void test_motors_together(void) {
     float right_dist = encoder_get_distance_mm(ENCODER_RIGHT);
     
     printf("Results:\n");
-    printf("  Left:  %d counts, %.2f mm\n", left_count, left_dist);
-    printf("  Right: %d counts, %.2f mm\n", right_count, right_dist);
+    printf("  Left:  %d counts, %.2f mm\n", (int)left_count, left_dist);
+    printf("  Right: %d counts, %.2f mm\n", (int)right_count, right_dist);
     printf("  Difference: %d counts, %.2f mm\n", 
-           abs(left_count - right_count),
-           fabs(left_dist - right_dist));
+           (int)abs(left_count - right_count),
+           fabsf(left_dist - right_dist));
     
-    float sync_error = fabs(left_dist - right_dist) / ((left_dist + right_dist) / 2.0f) * 100.0f;
+    float avg_dist = (left_dist + right_dist) / 2.0f;
+    float sync_error = 0.0f;
+    if (avg_dist > 0.1f) {  // Avoid division by zero
+        sync_error = fabsf(left_dist - right_dist) / avg_dist * 100.0f;
+    }
     printf("  Synchronization error: %.1f%%\n", sync_error);
     
     if (sync_error < 10.0f) {
@@ -131,10 +137,10 @@ void test_speed_variations(void) {
         motor_stop_all();
         
         printf("  Left:  %d counts, %.2f mm\n", 
-               encoder_get_count(ENCODER_LEFT),
+               (int)encoder_get_count(ENCODER_LEFT),
                encoder_get_distance_mm(ENCODER_LEFT));
         printf("  Right: %d counts, %.2f mm\n",
-               encoder_get_count(ENCODER_RIGHT),
+               (int)encoder_get_count(ENCODER_RIGHT),
                encoder_get_distance_mm(ENCODER_RIGHT));
         
         sleep_ms(500);
@@ -192,8 +198,8 @@ void test_turning(void) {
     motor_turn_left(60);
     sleep_ms(1000);
     motor_stop_all();
-    printf("   Left:  %d counts\n", encoder_get_count(ENCODER_LEFT));
-    printf("   Right: %d counts\n", encoder_get_count(ENCODER_RIGHT));
+    printf("   Left:  %d counts\n", (int)encoder_get_count(ENCODER_LEFT));
+    printf("   Right: %d counts\n", (int)encoder_get_count(ENCODER_RIGHT));
     sleep_ms(500);
     
     // Test turn right
@@ -202,8 +208,8 @@ void test_turning(void) {
     motor_turn_right(60);
     sleep_ms(1000);
     motor_stop_all();
-    printf("   Left:  %d counts\n", encoder_get_count(ENCODER_LEFT));
-    printf("   Right: %d counts\n", encoder_get_count(ENCODER_RIGHT));
+    printf("   Left:  %d counts\n", (int)encoder_get_count(ENCODER_LEFT));
+    printf("   Right: %d counts\n", (int)encoder_get_count(ENCODER_RIGHT));
     sleep_ms(500);
     
     // Test rotate left
@@ -212,8 +218,8 @@ void test_turning(void) {
     motor_rotate_left(50);
     sleep_ms(1000);
     motor_stop_all();
-    printf("   Left:  %d counts (should be negative)\n", encoder_get_count(ENCODER_LEFT));
-    printf("   Right: %d counts (should be positive)\n", encoder_get_count(ENCODER_RIGHT));
+    printf("   Left:  %d counts (should be negative)\n", (int)encoder_get_count(ENCODER_LEFT));
+    printf("   Right: %d counts (should be positive)\n", (int)encoder_get_count(ENCODER_RIGHT));
     sleep_ms(500);
     
     // Test rotate right
@@ -222,8 +228,8 @@ void test_turning(void) {
     motor_rotate_right(50);
     sleep_ms(1000);
     motor_stop_all();
-    printf("   Left:  %d counts (should be positive)\n", encoder_get_count(ENCODER_LEFT));
-    printf("   Right: %d counts (should be negative)\n", encoder_get_count(ENCODER_RIGHT));
+    printf("   Left:  %d counts (should be positive)\n", (int)encoder_get_count(ENCODER_LEFT));
+    printf("   Right: %d counts (should be negative)\n", (int)encoder_get_count(ENCODER_RIGHT));
     
     printf("\n✓ Test 5 complete\n");
 }
@@ -309,6 +315,9 @@ int main() {
     printf("  2. Integrate with line following (test_line_motor)\n");
     printf("  3. Full system integration (robot_main)\n");
     print_separator();
+    
+    // Ensure motors are stopped
+    motor_stop_all();
     
     return 0;
 }
