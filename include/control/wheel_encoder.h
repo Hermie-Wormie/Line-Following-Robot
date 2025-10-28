@@ -1,15 +1,14 @@
 /**
  * @file wheel_encoder.h
- * @brief Single-channel wheel encoder driver for XYC-H206
+ * @brief Wheel Encoder Driver for XCH206 Optical Encoders
  * 
- * Hardware: XYC-H206 IR wheel encoder (3-wire: VCC, GND, OUT)
- * Features:
- * - Speed measurement (RPM)
- * - Distance measurement (pulses and cm)
- * - Direction inference from motor commands
+ * This driver supports single-channel optical encoders (XCH206)
+ * Each encoder uses one GPIO pin for pulse counting
  * 
- * Note: Single-channel encoders cannot detect direction from hardware.
- * Direction is inferred from motor controller state.
+ * Hardware Setup:
+ * - Motor 1 Encoder: Connected to one Grove port
+ * - Motor 2 Encoder: Connected to another Grove port (or sharing same port)
+ * - Each XCH206 has: GND, VCC (3.3V or 5V), and one signal pin
  */
 
 #ifndef WHEEL_ENCODER_H
@@ -17,144 +16,97 @@
 
 #include <stdint.h>
 #include <stdbool.h>
-#include <stddef.h>  // For size_t
 
-// Configuration constants
-#define ENCODER_PULSES_PER_REVOLUTION 20  // XYC-H206 typical value
-#define WHEEL_DIAMETER_CM 6.5             // Adjust to your wheel size
-#define WHEEL_CIRCUMFERENCE_CM (3.14159 * WHEEL_DIAMETER_CM)
+// Default GPIO pins - modify these based on your wiring
+#define ENCODER_LEFT_PIN    2   // GPIO pin for left wheel encoder
+#define ENCODER_RIGHT_PIN   6   // GPIO pin for right wheel encoder
 
-// Encoder direction (inferred from motor state)
-typedef enum {
-    ENCODER_DIR_FORWARD = 1,
-    ENCODER_DIR_BACKWARD = -1,
-    ENCODER_DIR_STOPPED = 0
-} encoder_direction_t;
+// Encoder configuration
+#define ENCODER_PULSES_PER_REV  20  // XCH206 typically has 20 slots
+#define WHEEL_DIAMETER_MM       65  // Adjust to your wheel diameter
+#define WHEEL_CIRCUMFERENCE_MM  (WHEEL_DIAMETER_MM * 3.14159)
+#define MM_PER_PULSE           (WHEEL_CIRCUMFERENCE_MM / ENCODER_PULSES_PER_REV)
 
-// Encoder data structure
+/**
+ * @brief Encoder data structure
+ */
 typedef struct {
-    // Raw pulse counting
-    volatile int32_t pulse_count;      // Signed count (can be negative)
-    volatile uint32_t total_pulses;    // Total pulses (always positive)
-    
-    // Direction inference
-    encoder_direction_t direction;
-    
-    // Speed measurement
-    volatile uint32_t last_pulse_time_us;
-    volatile uint32_t pulse_interval_us;
-    float rpm;
-    float speed_cm_per_sec;
-    
-    // Distance tracking
-    float distance_cm;
-    
-    // GPIO pin
-    uint32_t gpio_pin;
-    
-    // Calibration
-    bool is_calibrated;
-    uint32_t pulses_per_rev;
-} encoder_t;
+    uint32_t pulse_count;        // Total pulse count
+    uint32_t last_pulse_time_us; // Time of last pulse (microseconds)
+    float speed_rpm;             // Current speed in RPM
+    float distance_mm;           // Distance traveled in mm
+    bool direction_forward;      // True if moving forward
+} encoder_data_t;
 
 /**
- * @brief Initialize a wheel encoder
+ * @brief Initialize wheel encoders
  * 
- * @param encoder Pointer to encoder structure
- * @param gpio_pin GPIO pin connected to encoder OUT
+ * @param left_pin GPIO pin number for left encoder
+ * @param right_pin GPIO pin number for right encoder
+ * @return true if initialization successful, false otherwise
  */
-void encoder_init(encoder_t *encoder, uint32_t gpio_pin);
+bool encoder_init(uint8_t left_pin, uint8_t right_pin);
 
 /**
- * @brief Set the direction for the encoder based on motor command
+ * @brief Get encoder data for left wheel
  * 
- * This must be called whenever you change motor direction!
- * 
- * @param encoder Pointer to encoder structure
- * @param direction Direction (FORWARD, BACKWARD, or STOPPED)
+ * @return Pointer to left encoder data structure
  */
-void encoder_set_direction(encoder_t *encoder, encoder_direction_t direction);
+encoder_data_t* encoder_get_left_data(void);
 
 /**
- * @brief Get current pulse count (signed, respects direction)
+ * @brief Get encoder data for right wheel
  * 
- * @param encoder Pointer to encoder structure
- * @return int32_t Pulse count (negative if moving backward)
+ * @return Pointer to right encoder data structure
  */
-int32_t encoder_get_count(encoder_t *encoder);
+encoder_data_t* encoder_get_right_data(void);
 
 /**
- * @brief Get total pulses (always positive, ignores direction)
+ * @brief Reset encoder counts and distance
  * 
- * @param encoder Pointer to encoder structure
- * @return uint32_t Total pulses counted
+ * @param reset_left Reset left encoder if true
+ * @param reset_right Reset right encoder if true
  */
-uint32_t encoder_get_total_pulses(encoder_t *encoder);
+void encoder_reset(bool reset_left, bool reset_right);
 
 /**
- * @brief Reset the pulse counter to zero
+ * @brief Get speed in RPM for specified encoder
  * 
- * @param encoder Pointer to encoder structure
+ * @param is_left True for left encoder, false for right
+ * @return Speed in RPM
  */
-void encoder_reset_count(encoder_t *encoder);
+float encoder_get_speed_rpm(bool is_left);
 
 /**
- * @brief Calculate current speed in RPM
+ * @brief Get distance traveled in millimeters
  * 
- * @param encoder Pointer to encoder structure
- * @return float Speed in RPM (0 if stopped or stale data)
+ * @param is_left True for left encoder, false for right
+ * @return Distance in mm
  */
-float encoder_get_rpm(encoder_t *encoder);
+float encoder_get_distance_mm(bool is_left);
 
 /**
- * @brief Calculate current speed in cm/s
+ * @brief Get pulse count
  * 
- * @param encoder Pointer to encoder structure
- * @return float Speed in cm/s (negative if moving backward)
+ * @param is_left True for left encoder, false for right
+ * @return Total pulse count
  */
-float encoder_get_speed_cm_per_sec(encoder_t *encoder);
+uint32_t encoder_get_pulse_count(bool is_left);
 
 /**
- * @brief Get distance traveled in centimeters
+ * @brief Update speed calculations (call periodically, e.g., every 100ms)
  * 
- * @param encoder Pointer to encoder structure
- * @return float Distance in cm (negative if net backward movement)
+ * This function should be called regularly to update speed calculations
+ * even when no pulses are detected (for detecting stopped wheels)
  */
-float encoder_get_distance_cm(encoder_t *encoder);
+void encoder_update_speed(void);
 
 /**
- * @brief Reset distance measurement to zero
+ * @brief Set direction for encoder
  * 
- * @param encoder Pointer to encoder structure
+ * @param is_left True for left encoder, false for right
+ * @param forward True for forward direction, false for reverse
  */
-void encoder_reset_distance(encoder_t *encoder);
-
-/**
- * @brief Calibrate encoder pulses per revolution
- * 
- * Manually spin the wheel exactly one full rotation and call this
- * 
- * @param encoder Pointer to encoder structure
- * @param measured_pulses Number of pulses counted in one revolution
- */
-void encoder_calibrate(encoder_t *encoder, uint32_t measured_pulses);
-
-/**
- * @brief Update speed calculations (call periodically, e.g., 10Hz)
- * 
- * This checks if encoder has stopped (no recent pulses) and updates speed
- * 
- * @param encoder Pointer to encoder structure
- */
-void encoder_update(encoder_t *encoder);
-
-/**
- * @brief Get diagnostic information
- * 
- * @param encoder Pointer to encoder structure
- * @param buffer String buffer to write diagnostics
- * @param buffer_size Size of buffer
- */
-void encoder_get_diagnostics(encoder_t *encoder, char *buffer, size_t buffer_size);
+void encoder_set_direction(bool is_left, bool forward);
 
 #endif // WHEEL_ENCODER_H

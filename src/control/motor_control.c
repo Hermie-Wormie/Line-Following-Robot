@@ -1,183 +1,490 @@
-#include "control/motor_control.h"
-#include "robot_config.h"
+/**
+ * @file motor_control.c
+ * @brief Motor Control Implementation for Robo PICO
+ */
+
+#include "motor_control.h"
+#include "wheel_encoder.h"
+#include "pico/stdlib.h"
 #include "hardware/pwm.h"
 #include "hardware/gpio.h"
-#include <stdio.h>
-#include <stdlib.h>
+#include <math.h>
 
-// Motor state tracking
-typedef struct {
-    uint pwm_pin;
-    uint dir_pin;
-    uint slice;
-    uint channel;
-    int current_speed;  // -100 to 100
-    bool initialized;
-} motor_state_t;
+// Motor state
+static motor_state_t left_motor = {0};
+static motor_state_t right_motor = {0};
 
-static motor_state_t motors[2];
-static bool system_initialized = false;
+// PWM slice numbers
+static uint left_pwm_slice;
+static uint right_pwm_slice;
+
+// Forward declarations
+static void set_motor_direction(bool is_left, motor_direction_t direction);
+static void set_motor_pwm_duty(bool is_left, float duty);
+static float compute_pid(pid_controller_t* pid, float current_value);
+static float constrain_float(float value, float min, float max);
 
 /**
- * @brief Initialize a single motor
+ * @brief Initialize motor control system
  */
-static void motor_init_single(motor_state_t *motor, uint pwm_pin, uint dir_pin) {
-    motor->pwm_pin = pwm_pin;
-    motor->dir_pin = dir_pin;
-    motor->current_speed = 0;
+bool motor_init(void) {
+    // Initialize motor state structures
+    left_motor.current_pwm = 0.0f;
+    left_motor.target_rpm = 0.0f;
+    left_motor.current_rpm = 0.0f;
+    left_motor.direction = MOTOR_STOP;
+    left_motor.enabled = true;
     
-    // Initialize direction pin
-    gpio_init(dir_pin);
-    gpio_set_dir(dir_pin, GPIO_OUT);
-    gpio_put(dir_pin, 0);
+    // Initialize left PID
+    left_motor.pid.kp = PID_KP_DEFAULT;
+    left_motor.pid.ki = PID_KI_DEFAULT;
+    left_motor.pid.kd = PID_KD_DEFAULT;
+    left_motor.pid.integral = 0.0f;
+    left_motor.pid.last_error = 0.0f;
+    left_motor.pid.setpoint = 0.0f;
+    left_motor.pid.output = 0.0f;
+    left_motor.pid.enabled = false;  // Disabled by default
     
-    // Initialize PWM pin
-    gpio_set_function(pwm_pin, GPIO_FUNC_PWM);
-    motor->slice = pwm_gpio_to_slice_num(pwm_pin);
-    motor->channel = pwm_gpio_to_channel(pwm_pin);
+    // Initialize right motor
+    right_motor.current_pwm = 0.0f;
+    right_motor.target_rpm = 0.0f;
+    right_motor.current_rpm = 0.0f;
+    right_motor.direction = MOTOR_STOP;
+    right_motor.enabled = true;
     
-    // Configure PWM
-    pwm_config config = pwm_get_default_config();
+    right_motor.pid.kp = PID_KP_DEFAULT;
+    right_motor.pid.ki = PID_KI_DEFAULT;
+    right_motor.pid.kd = PID_KD_DEFAULT;
+    right_motor.pid.integral = 0.0f;
+    right_motor.pid.last_error = 0.0f;
+    right_motor.pid.setpoint = 0.0f;
+    right_motor.pid.output = 0.0f;
+    right_motor.pid.enabled = false;  // Disabled by default
     
-    // Set frequency to MOTOR_PWM_FREQUENCY (default 1000 Hz)
-    // System clock is 125 MHz
-    float clkdiv = 125000000.0f / (MOTOR_PWM_FREQUENCY * 65535);
-    pwm_config_set_clkdiv(&config, clkdiv);
-    pwm_config_set_wrap(&config, 65535);
+    // Initialize direction pins (single pin per motor on Robo PICO)
+    gpio_init(MOTOR_LEFT_DIR_PIN);
+    gpio_set_dir(MOTOR_LEFT_DIR_PIN, GPIO_OUT);
+    gpio_put(MOTOR_LEFT_DIR_PIN, 0);
     
-    pwm_init(motor->slice, &config, true);
-    pwm_set_chan_level(motor->slice, motor->channel, 0);
+    gpio_init(MOTOR_RIGHT_DIR_PIN);
+    gpio_set_dir(MOTOR_RIGHT_DIR_PIN, GPIO_OUT);
+    gpio_put(MOTOR_RIGHT_DIR_PIN, 0);
     
-    motor->initialized = true;
+    // Initialize PWM for left motor
+    gpio_set_function(MOTOR_LEFT_PWM_PIN, GPIO_FUNC_PWM);
+    left_pwm_slice = pwm_gpio_to_slice_num(MOTOR_LEFT_PWM_PIN);
+    pwm_set_wrap(left_pwm_slice, PWM_WRAP_VALUE);
+    pwm_set_chan_level(left_pwm_slice, pwm_gpio_to_channel(MOTOR_LEFT_PWM_PIN), 0);
+    pwm_set_enabled(left_pwm_slice, true);
+    
+    // Initialize PWM for right motor
+    gpio_set_function(MOTOR_RIGHT_PWM_PIN, GPIO_FUNC_PWM);
+    right_pwm_slice = pwm_gpio_to_slice_num(MOTOR_RIGHT_PWM_PIN);
+    pwm_set_wrap(right_pwm_slice, PWM_WRAP_VALUE);
+    pwm_set_chan_level(right_pwm_slice, pwm_gpio_to_channel(MOTOR_RIGHT_PWM_PIN), 0);
+    pwm_set_enabled(right_pwm_slice, true);
+    
+    return true;
 }
 
 /**
- * @brief Set PWM duty cycle for a motor
- * @param motor Motor state structure
- * @param duty_cycle Duty cycle (0-100%)
+ * @brief Shutdown motor control
  */
-static void motor_set_pwm(motor_state_t *motor, uint duty_cycle) {
-    if (!motor->initialized) return;
-    
-    // Clamp duty cycle
-    if (duty_cycle > 100) duty_cycle = 100;
-    
-    // Convert percentage to PWM level (0-65535)
-    uint16_t level = (uint16_t)((duty_cycle * 65535) / 100);
-    pwm_set_chan_level(motor->slice, motor->channel, level);
+void motor_shutdown(void) {
+    motor_stop();
+    pwm_set_enabled(left_pwm_slice, false);
+    pwm_set_enabled(right_pwm_slice, false);
 }
 
 /**
- * @brief Set motor direction
- * @param motor Motor state structure
- * @param direction MOTOR_FORWARD or MOTOR_BACKWARD
+ * @brief Enable/disable PID control
  */
-static void motor_set_direction(motor_state_t *motor, motor_direction_t direction) {
-    if (!motor->initialized) return;
-    gpio_put(motor->dir_pin, direction);
+void motor_pid_enable(bool enable) {
+    left_motor.pid.enabled = enable;
+    right_motor.pid.enabled = enable;
+    
+    if (!enable) {
+        motor_reset_pid();
+    }
 }
 
-void motor_control_init(void) {
-    if (system_initialized) {
-        return;  // Already initialized
+/**
+ * @brief Set PID parameters
+ */
+void motor_set_pid_params(float kp, float ki, float kd) {
+    left_motor.pid.kp = kp;
+    left_motor.pid.ki = ki;
+    left_motor.pid.kd = kd;
+    
+    right_motor.pid.kp = kp;
+    right_motor.pid.ki = ki;
+    right_motor.pid.kd = kd;
+}
+
+/**
+ * @brief Compute PID output
+ */
+static float compute_pid(pid_controller_t* pid, float current_value) {
+    float error = pid->setpoint - current_value;
+    
+    // Proportional term
+    float p_term = pid->kp * error;
+    
+    // Integral term with anti-windup
+    pid->integral += error;
+    if (pid->integral > PID_INTEGRAL_MAX) {
+        pid->integral = PID_INTEGRAL_MAX;
+    } else if (pid->integral < -PID_INTEGRAL_MAX) {
+        pid->integral = -PID_INTEGRAL_MAX;
+    }
+    float i_term = pid->ki * pid->integral;
+    
+    // Derivative term
+    float derivative = error - pid->last_error;
+    float d_term = pid->kd * derivative;
+    pid->last_error = error;
+    
+    // Calculate total output
+    float output = p_term + i_term + d_term;
+    output = constrain_float(output, -PID_OUTPUT_MAX, PID_OUTPUT_MAX);
+    
+    pid->output = output;
+    return output;
+}
+
+/**
+ * @brief Update PID controllers
+ */
+void motor_update(void) {
+    encoder_update_speed();
+    
+    left_motor.current_rpm = encoder_get_speed_rpm(true);
+    right_motor.current_rpm = encoder_get_speed_rpm(false);
+    
+    if (left_motor.pid.enabled && left_motor.enabled) {
+        left_motor.pid.setpoint = left_motor.target_rpm;
+        float left_correction = compute_pid(&left_motor.pid, left_motor.current_rpm);
+        
+        float new_pwm = left_motor.current_pwm + left_correction;
+        new_pwm = constrain_float(new_pwm, MIN_PWM_DUTY, MAX_PWM_DUTY);
+        
+        set_motor_pwm_duty(true, new_pwm);
+        left_motor.current_pwm = new_pwm;
     }
     
-    // Initialize left motor (Motor 1)
-    motor_init_single(&motors[MOTOR_LEFT], MOTOR1_PWM_PIN, MOTOR1_DIR_PIN);
-    
-    // Initialize right motor (Motor 2)
-    motor_init_single(&motors[MOTOR_RIGHT], MOTOR2_PWM_PIN, MOTOR2_DIR_PIN);
-    
-    system_initialized = true;
-    
-    printf("Motor control initialized\n");
-    printf("  Left Motor:  PWM=GP%d, DIR=GP%d\n", MOTOR1_PWM_PIN, MOTOR1_DIR_PIN);
-    printf("  Right Motor: PWM=GP%d, DIR=GP%d\n", MOTOR2_PWM_PIN, MOTOR2_DIR_PIN);
-    printf("  PWM Frequency: %d Hz\n", MOTOR_PWM_FREQUENCY);
+    if (right_motor.pid.enabled && right_motor.enabled) {
+        right_motor.pid.setpoint = right_motor.target_rpm;
+        float right_correction = compute_pid(&right_motor.pid, right_motor.current_rpm);
+        
+        float new_pwm = right_motor.current_pwm + right_correction;
+        new_pwm = constrain_float(new_pwm, MIN_PWM_DUTY, MAX_PWM_DUTY);
+        
+        set_motor_pwm_duty(false, new_pwm);
+        right_motor.current_pwm = new_pwm;
+    }
 }
 
-void motor_set_speed(motor_id_t motor, int speed) {
-    if (!system_initialized || motor > MOTOR_RIGHT) {
-        return;
-    }
+/**
+ * @brief Set target speed in RPM
+ */
+void motor_set_speed_rpm(float rpm_left, float rpm_right) {
+    left_motor.target_rpm = fabs(rpm_left);
+    right_motor.target_rpm = fabs(rpm_right);
     
-    motor_state_t *m = &motors[motor];
+    left_motor.pid.setpoint = left_motor.target_rpm;
+    right_motor.pid.setpoint = right_motor.target_rpm;
     
-    // Clamp speed to valid range
-    if (speed > 100) speed = 100;
-    if (speed < -100) speed = -100;
-    
-    m->current_speed = speed;
+    // Set initial PWM to get motors moving
+    set_motor_pwm_duty(true, 50.0f);  // Start at 50%
+    set_motor_pwm_duty(false, 50.0f);
     
     // Set direction based on sign
-    if (speed >= 0) {
-        motor_set_direction(m, MOTOR_FORWARD);
-        motor_set_pwm(m, abs(speed));
+    if (rpm_left >= 0) {
+        set_motor_direction(true, MOTOR_FORWARD);
     } else {
-        motor_set_direction(m, MOTOR_BACKWARD);
-        motor_set_pwm(m, abs(speed));
-    }
-}
-
-void motor_stop(motor_id_t motor) {
-    if (!system_initialized || motor > MOTOR_RIGHT) {
-        return;
+        set_motor_direction(true, MOTOR_BACKWARD);
     }
     
-    motor_set_speed(motor, 0);
-}
-
-void motor_stop_all(void) {
-    motor_stop(MOTOR_LEFT);
-    motor_stop(MOTOR_RIGHT);
-}
-
-void motor_forward(int speed) {
-    motor_set_speed(MOTOR_LEFT, speed);
-    motor_set_speed(MOTOR_RIGHT, speed);
-}
-
-void motor_backward(int speed) {
-    motor_set_speed(MOTOR_LEFT, -speed);
-    motor_set_speed(MOTOR_RIGHT, -speed);
-}
-
-void motor_turn_left(int speed) {
-    // Left motor at half speed, right motor at full speed
-    motor_set_speed(MOTOR_LEFT, speed / 2);
-    motor_set_speed(MOTOR_RIGHT, speed);
-}
-
-void motor_turn_right(int speed) {
-    // Right motor at half speed, left motor at full speed
-    motor_set_speed(MOTOR_LEFT, speed);
-    motor_set_speed(MOTOR_RIGHT, speed / 2);
-}
-
-void motor_rotate_left(int speed) {
-    // Left motor backward, right motor forward (rotate in place)
-    motor_set_speed(MOTOR_LEFT, -speed);
-    motor_set_speed(MOTOR_RIGHT, speed);
-}
-
-void motor_rotate_right(int speed) {
-    // Left motor forward, right motor backward (rotate in place)
-    motor_set_speed(MOTOR_LEFT, speed);
-    motor_set_speed(MOTOR_RIGHT, -speed);
-}
-
-void motor_set_differential(int left_speed, int right_speed) {
-    motor_set_speed(MOTOR_LEFT, left_speed);
-    motor_set_speed(MOTOR_RIGHT, right_speed);
-}
-
-int motor_get_speed(motor_id_t motor) {
-    if (!system_initialized || motor > MOTOR_RIGHT) {
-        return 0;
+    if (rpm_right >= 0) {
+        set_motor_direction(false, MOTOR_FORWARD);
+    } else {
+        set_motor_direction(false, MOTOR_BACKWARD);
     }
-    return motors[motor].current_speed;
 }
 
-bool motor_is_initialized(void) {
-    return system_initialized;
+/**
+ * @brief Set motor direction (Robo PICO: 1=forward, 0=backward)
+ */
+static void set_motor_direction(bool is_left, motor_direction_t direction) {
+    uint8_t dir_pin = is_left ? MOTOR_LEFT_DIR_PIN : MOTOR_RIGHT_DIR_PIN;
+    
+    switch (direction) {
+        case MOTOR_FORWARD:
+            gpio_put(dir_pin, 1);
+            encoder_set_direction(is_left, true);
+            break;
+            
+        case MOTOR_BACKWARD:
+            gpio_put(dir_pin, 0);
+            encoder_set_direction(is_left, false);
+            break;
+            
+        case MOTOR_STOP:
+            // Keep direction, just set PWM to 0
+            break;
+    }
+    
+    if (is_left) {
+        left_motor.direction = direction;
+    } else {
+        right_motor.direction = direction;
+    }
+}
+
+/**
+ * @brief Set PWM duty cycle
+ */
+static void set_motor_pwm_duty(bool is_left, float duty) {
+    duty = constrain_float(duty, 0.0f, MAX_PWM_DUTY);
+    
+    uint slice = is_left ? left_pwm_slice : right_pwm_slice;
+    uint channel = is_left ? 
+                   pwm_gpio_to_channel(MOTOR_LEFT_PWM_PIN) : 
+                   pwm_gpio_to_channel(MOTOR_RIGHT_PWM_PIN);
+    
+    uint16_t level = (uint16_t)((duty / 100.0f) * PWM_WRAP_VALUE);
+    pwm_set_chan_level(slice, channel, level);
+    
+    if (is_left) {
+        left_motor.current_pwm = duty;
+    } else {
+        right_motor.current_pwm = duty;
+    }
+}
+
+/**
+ * @brief Set motor PWM directly
+ */
+void motor_set_pwm(float pwm_left, float pwm_right) {
+    set_motor_pwm_duty(true, pwm_left);
+    set_motor_pwm_duty(false, pwm_right);
+}
+
+/**
+ * @brief Move forward
+ */
+void motor_forward(float speed) {
+    speed = constrain_float(speed, 0.0f, MAX_PWM_DUTY);
+    
+    set_motor_direction(true, MOTOR_FORWARD);
+    set_motor_direction(false, MOTOR_FORWARD);
+    
+    set_motor_pwm_duty(true, speed);
+    set_motor_pwm_duty(false, speed);
+}
+
+/**
+ * @brief Move backward
+ */
+void motor_backward(float speed) {
+    speed = constrain_float(speed, 0.0f, MAX_PWM_DUTY);
+    
+    set_motor_direction(true, MOTOR_BACKWARD);
+    set_motor_direction(false, MOTOR_BACKWARD);
+    
+    set_motor_pwm_duty(true, speed);
+    set_motor_pwm_duty(false, speed);
+}
+
+/**
+ * @brief Turn left
+ */
+void motor_turn_left(float speed) {
+    speed = constrain_float(speed, 0.0f, MAX_PWM_DUTY);
+    float reduced_speed = speed * TURN_SPEED_FACTOR;
+    
+    set_motor_direction(true, MOTOR_FORWARD);
+    set_motor_direction(false, MOTOR_FORWARD);
+    
+    set_motor_pwm_duty(true, reduced_speed);
+    set_motor_pwm_duty(false, speed);
+}
+
+/**
+ * @brief Turn right
+ */
+void motor_turn_right(float speed) {
+    speed = constrain_float(speed, 0.0f, MAX_PWM_DUTY);
+    float reduced_speed = speed * TURN_SPEED_FACTOR;
+    
+    set_motor_direction(true, MOTOR_FORWARD);
+    set_motor_direction(false, MOTOR_FORWARD);
+    
+    set_motor_pwm_duty(true, speed);
+    set_motor_pwm_duty(false, reduced_speed);
+}
+
+/**
+ * @brief Pivot turn
+ */
+void motor_pivot_turn(float speed, bool clockwise) {
+    speed = constrain_float(speed, 0.0f, MAX_PWM_DUTY);
+    
+    if (clockwise) {
+        set_motor_direction(true, MOTOR_FORWARD);
+        set_motor_direction(false, MOTOR_BACKWARD);
+    } else {
+        set_motor_direction(true, MOTOR_BACKWARD);
+        set_motor_direction(false, MOTOR_FORWARD);
+    }
+    
+    set_motor_pwm_duty(true, speed);
+    set_motor_pwm_duty(false, speed);
+}
+
+/**
+ * @brief Stop both motors
+ */
+void motor_stop(void) {
+    set_motor_pwm_duty(true, 0.0f);
+    set_motor_pwm_duty(false, 0.0f);
+    
+    left_motor.target_rpm = 0.0f;
+    right_motor.target_rpm = 0.0f;
+}
+
+/**
+ * @brief Emergency stop
+ */
+void motor_emergency_stop(void) {
+    set_motor_pwm_duty(true, 0.0f);
+    set_motor_pwm_duty(false, 0.0f);
+    
+    motor_stop();
+}
+
+/**
+ * @brief Set individual motor
+ */
+void motor_set(bool is_left, motor_direction_t direction, float speed) {
+    speed = constrain_float(speed, 0.0f, MAX_PWM_DUTY);
+    
+    set_motor_direction(is_left, direction);
+    set_motor_pwm_duty(is_left, speed);
+}
+
+/**
+ * @brief Adjust motor balance
+ */
+void motor_adjust_balance(float correction) {
+    correction = constrain_float(correction, -50.0f, 50.0f);
+    
+    if (correction > 0) {
+        float new_right = right_motor.current_pwm + correction;
+        new_right = constrain_float(new_right, MIN_PWM_DUTY, MAX_PWM_DUTY);
+        set_motor_pwm_duty(false, new_right);
+    } else if (correction < 0) {
+        float new_left = left_motor.current_pwm + fabs(correction);
+        new_left = constrain_float(new_left, MIN_PWM_DUTY, MAX_PWM_DUTY);
+        set_motor_pwm_duty(true, new_left);
+    }
+}
+
+/**
+ * @brief Get motor state
+ */
+motor_state_t* motor_get_state(bool is_left) {
+    return is_left ? &left_motor : &right_motor;
+}
+
+/**
+ * @brief Ramp speed smoothly
+ */
+void motor_ramp_speed(float target_left, float target_right, uint32_t ramp_time_ms) {
+    float start_left = left_motor.current_pwm;
+    float start_right = right_motor.current_pwm;
+    
+    float delta_left = target_left - start_left;
+    float delta_right = target_right - start_right;
+    
+    uint32_t steps = ramp_time_ms / 20;
+    
+    for (uint32_t i = 0; i <= steps; i++) {
+        float progress = (float)i / steps;
+        
+        float current_left = start_left + (delta_left * progress);
+        float current_right = start_right + (delta_right * progress);
+        
+        set_motor_pwm_duty(true, current_left);
+        set_motor_pwm_duty(false, current_right);
+        
+        sleep_ms(20);
+    }
+}
+
+/**
+ * @brief Reset PID controllers
+ */
+void motor_reset_pid(void) {
+    left_motor.pid.integral = 0.0f;
+    left_motor.pid.last_error = 0.0f;
+    left_motor.pid.output = 0.0f;
+    
+    right_motor.pid.integral = 0.0f;
+    right_motor.pid.last_error = 0.0f;
+    right_motor.pid.output = 0.0f;
+}
+
+/**
+ * @brief Get current PWM
+ */
+float motor_get_pwm(bool is_left) {
+    return is_left ? left_motor.current_pwm : right_motor.current_pwm;
+}
+
+/**
+ * @brief Constrain float value
+ */
+static float constrain_float(float value, float min, float max) {
+    if (value < min) return min;
+    if (value > max) return max;
+    return value;
+}
+
+/**
+ * @brief Test motor sequence
+ */
+void motor_test_sequence(void) {
+    printf("=== Motor Test Sequence ===\n");
+    
+    printf("Test 1: Forward 50%% for 2s\n");
+    motor_forward(50);
+    sleep_ms(2000);
+    motor_stop();
+    sleep_ms(1000);
+    
+    printf("Test 2: Backward 50%% for 2s\n");
+    motor_backward(50);
+    sleep_ms(2000);
+    motor_stop();
+    sleep_ms(1000);
+    
+    printf("Test 3: Turn left for 2s\n");
+    motor_turn_left(40);
+    sleep_ms(2000);
+    motor_stop();
+    sleep_ms(1000);
+    
+    printf("Test 4: Turn right for 2s\n");
+    motor_turn_right(40);
+    sleep_ms(2000);
+    motor_stop();
+    sleep_ms(1000);
+    
+    printf("Test 5: Pivot turn clockwise for 2s\n");
+    motor_pivot_turn(35, true);
+    sleep_ms(2000);
+    motor_stop();
+    
+    printf("Test complete!\n");
 }

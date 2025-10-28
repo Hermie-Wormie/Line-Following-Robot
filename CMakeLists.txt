@@ -1,27 +1,22 @@
-# INF2004 Robotic Car Project
-# Team IS21 - Line Following Robot with Barcode Navigation
-
 cmake_minimum_required(VERSION 3.13)
 
-# Include the Pico SDK
 include($ENV{PICO_SDK_PATH}/external/pico_sdk_import.cmake)
 
 project(robotic_car C CXX ASM)
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 17)
 
-# Initialize the Pico SDK
 pico_sdk_init()
 
-# ============================================================================
-# FIXED: Set include directories - add all subdirectories!
-# ============================================================================
+# Add this line to help IntelliSense
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+# Your existing include directories
 include_directories(
-    ${CMAKE_SOURCE_DIR}/include
-    ${CMAKE_SOURCE_DIR}/include/common
-    ${CMAKE_SOURCE_DIR}/include/communication
-    ${CMAKE_SOURCE_DIR}/include/control
-    ${CMAKE_SOURCE_DIR}/include/sensors
+    ${CMAKE_CURRENT_LIST_DIR}/include
+    ${CMAKE_CURRENT_LIST_DIR}/include/common
+    ${CMAKE_CURRENT_LIST_DIR}/include/control
+    ${CMAKE_CURRENT_LIST_DIR}/include/sensors
 )
 
 # ============================================================================
@@ -47,22 +42,21 @@ pico_enable_stdio_uart(motor_encoder_test 0)
 pico_add_extra_outputs(motor_encoder_test)
 
 # Simple Motor + Encoder Test
-add_executable(simple_motor_encoder_test
-    tests/simple_motor_encoder_test.c
+add_executable(motor_simple_test
+    tests/motor_simple_test.c
     src/control/motor_control.c
-    src/control/wheel_encoder.c
 )
 
-target_link_libraries(simple_motor_encoder_test
+target_link_libraries(motor_simple_test
     pico_stdlib
     hardware_pwm
     hardware_gpio
     hardware_timer
 )
 
-pico_enable_stdio_usb(simple_motor_encoder_test 1)
-pico_enable_stdio_uart(simple_motor_encoder_test 0)
-pico_add_extra_outputs(simple_motor_encoder_test)
+pico_enable_stdio_usb(motor_simple_test 1)
+pico_enable_stdio_uart(motor_simple_test 0)
+pico_add_extra_outputs(motor_simple_test)
 
 
 # # IR Sensor Basic Test
