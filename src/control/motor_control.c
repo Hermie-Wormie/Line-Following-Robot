@@ -1,5 +1,5 @@
 #include "control/motor_control.h"
-#include "common/robot_config.h"
+#include "robot_config.h"
 #include "hardware/pwm.h"
 #include "hardware/gpio.h"
 #include <stdio.h>

@@ -13,39 +13,57 @@ set(CMAKE_CXX_STANDARD 17)
 # Initialize the Pico SDK
 pico_sdk_init()
 
-# Set include directories
-include_directories(include)
+# ============================================================================
+# FIXED: Set include directories - add all subdirectories!
+# ============================================================================
+include_directories(
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/include/common
+    ${CMAKE_SOURCE_DIR}/include/communication
+    ${CMAKE_SOURCE_DIR}/include/control
+    ${CMAKE_SOURCE_DIR}/include/sensors
+)
 
 # ============================================================================
 # COMPONENT TESTS - Individual driver testing
 # ============================================================================
 
-# Encoder Hardware Diagnostic Tool
-add_executable(test_encoder_diagnostic
-    tests/test_encoder_diagnostic.c
-)
-target_link_libraries(test_encoder_diagnostic
-    pico_stdlib
-    hardware_gpio
-)
-pico_enable_stdio_usb(test_encoder_diagnostic 1)
-pico_enable_stdio_uart(test_encoder_diagnostic 0)
-pico_add_extra_outputs(test_encoder_diagnostic)
-
-# Motor and Encoder Test (UPDATED WITH MOTOR_CONTROL)
-add_executable(test_motor_encoder
-    tests/test_motor_encoder.c
-    src/control/motor_control.c      # <-- ADDED
+# Motor Encoder Diagnostic Test
+add_executable(motor_encoder_test
+    tests/motor_encoder_test.c
+    src/control/motor_control.c
     src/control/wheel_encoder.c
 )
-target_link_libraries(test_motor_encoder
+
+target_link_libraries(motor_encoder_test
     pico_stdlib
     hardware_pwm
     hardware_gpio
+    hardware_timer
 )
-pico_enable_stdio_usb(test_motor_encoder 1)
-pico_enable_stdio_uart(test_motor_encoder 0)
-pico_add_extra_outputs(test_motor_encoder)
+
+pico_enable_stdio_usb(motor_encoder_test 1)
+pico_enable_stdio_uart(motor_encoder_test 0)
+pico_add_extra_outputs(motor_encoder_test)
+
+# Simple Motor + Encoder Test
+add_executable(simple_motor_encoder_test
+    tests/simple_motor_encoder_test.c
+    src/control/motor_control.c
+    src/control/wheel_encoder.c
+)
+
+target_link_libraries(simple_motor_encoder_test
+    pico_stdlib
+    hardware_pwm
+    hardware_gpio
+    hardware_timer
+)
+
+pico_enable_stdio_usb(simple_motor_encoder_test 1)
+pico_enable_stdio_uart(simple_motor_encoder_test 0)
+pico_add_extra_outputs(simple_motor_encoder_test)
+
 
 # # IR Sensor Basic Test
 # add_executable(test_ir_basic

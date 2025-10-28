@@ -1,236 +1,187 @@
+/**
+ * @file wheel_encoder.c
+ * @brief Single-channel wheel encoder driver implementation for XYC-H206
+ */
+
 #include "control/wheel_encoder.h"
-#include "common/robot_config.h"
+#include "pico/stdlib.h"
 #include "hardware/gpio.h"
+#include "hardware/timer.h"
 #include <stdio.h>
-#include <math.h>
+#include <string.h>
+#include <stddef.h>  // For size_t
 
-// Encoder state
-typedef struct {
-    uint pin_a;
-    uint pin_b;
-    volatile int32_t count;
-    uint32_t last_pulse_time;
-    uint32_t pulse_period;
-    bool initialized;
-} encoder_state_t;
+// Speed timeout (if no pulse in this time, assume stopped)
+#define SPEED_TIMEOUT_US 500000  // 0.5 seconds
 
-static encoder_state_t encoders[2];
-static bool system_initialized = false;
-
-// Constants for calculations
-static const float MM_PER_PULSE = WHEEL_CIRCUMFERENCE_MM / ENCODER_PULSES_PER_REV;
-static const float SPEED_TIMEOUT_US = 500000;  // 500ms - consider stopped if no pulse
+// Global encoder pointers for IRQ handlers
+static encoder_t *left_encoder_ptr = NULL;
+static encoder_t *right_encoder_ptr = NULL;
 
 /**
- * @brief Interrupt handler for left encoder (Motor 1)
+ * @brief GPIO interrupt handler for left encoder
  */
-static void encoder_left_isr(uint gpio, uint32_t events) {
-    encoder_state_t *enc = &encoders[ENCODER_LEFT];
+static void left_encoder_irq_handler(uint gpio, uint32_t events) {
+    if (left_encoder_ptr == NULL) return;
     
-    bool a = gpio_get(enc->pin_a);
-    bool b = gpio_get(enc->pin_b);
+    // Get current time
+    uint32_t now = time_us_32();
     
-    // Determine direction based on A and B phases
-    if (gpio == enc->pin_a) {
-        if (a == b) {
-            enc->count++;  // Forward
-        } else {
-            enc->count--;  // Backward
-        }
+    // Calculate pulse interval
+    if (left_encoder_ptr->last_pulse_time_us != 0) {
+        left_encoder_ptr->pulse_interval_us = now - left_encoder_ptr->last_pulse_time_us;
     }
+    left_encoder_ptr->last_pulse_time_us = now;
     
-    // Update timing for speed calculation
-    uint32_t current_time = time_us_32();
-    enc->pulse_period = current_time - enc->last_pulse_time;
-    enc->last_pulse_time = current_time;
+    // Update counters based on direction
+    left_encoder_ptr->pulse_count += left_encoder_ptr->direction;
+    left_encoder_ptr->total_pulses++;
 }
 
 /**
- * @brief Interrupt handler for right encoder (Motor 2)
+ * @brief GPIO interrupt handler for right encoder
  */
-static void encoder_right_isr(uint gpio, uint32_t events) {
-    encoder_state_t *enc = &encoders[ENCODER_RIGHT];
+static void right_encoder_irq_handler(uint gpio, uint32_t events) {
+    if (right_encoder_ptr == NULL) return;
     
-    bool a = gpio_get(enc->pin_a);
-    bool b = gpio_get(enc->pin_b);
+    // Get current time
+    uint32_t now = time_us_32();
     
-    // Determine direction based on A and B phases
-    if (gpio == enc->pin_a) {
-        if (a == b) {
-            enc->count++;  // Forward
-        } else {
-            enc->count--;  // Backward
-        }
+    // Calculate pulse interval
+    if (right_encoder_ptr->last_pulse_time_us != 0) {
+        right_encoder_ptr->pulse_interval_us = now - right_encoder_ptr->last_pulse_time_us;
+    }
+    right_encoder_ptr->last_pulse_time_us = now;
+    
+    // Update counters based on direction
+    right_encoder_ptr->pulse_count += right_encoder_ptr->direction;
+    right_encoder_ptr->total_pulses++;
+}
+
+void encoder_init(encoder_t *encoder, uint32_t gpio_pin) {
+    // Initialize structure
+    memset(encoder, 0, sizeof(encoder_t));
+    encoder->gpio_pin = gpio_pin;
+    encoder->direction = ENCODER_DIR_STOPPED;
+    encoder->pulses_per_rev = ENCODER_PULSES_PER_REVOLUTION;
+    encoder->is_calibrated = false;
+    
+    // Configure GPIO
+    gpio_init(gpio_pin);
+    gpio_set_dir(gpio_pin, GPIO_IN);
+    gpio_pull_up(gpio_pin);  // Internal pull-up for optical encoder
+    
+    // Store pointer for IRQ (assumes max 2 encoders: left and right)
+    if (left_encoder_ptr == NULL) {
+        left_encoder_ptr = encoder;
+        gpio_set_irq_enabled_with_callback(gpio_pin, GPIO_IRQ_EDGE_FALL, 
+                                          true, &left_encoder_irq_handler);
+    } else if (right_encoder_ptr == NULL) {
+        right_encoder_ptr = encoder;
+        gpio_set_irq_enabled_with_callback(gpio_pin, GPIO_IRQ_EDGE_FALL, 
+                                          true, &right_encoder_irq_handler);
     }
     
-    // Update timing for speed calculation
-    uint32_t current_time = time_us_32();
-    enc->pulse_period = current_time - enc->last_pulse_time;
-    enc->last_pulse_time = current_time;
+    printf("[ENCODER] Initialized on GPIO %d\n", gpio_pin);
 }
 
-/**
- * @brief Initialize a single encoder
- */
-static void encoder_init_single(encoder_state_t *enc, uint pin_a, uint pin_b, 
-                                 gpio_irq_callback_t callback) {
-    enc->pin_a = pin_a;
-    enc->pin_b = pin_b;
-    enc->count = 0;
-    enc->last_pulse_time = 0;
-    enc->pulse_period = 0;
-    
-    // Initialize GPIO pins
-    gpio_init(pin_a);
-    gpio_init(pin_b);
-    gpio_set_dir(pin_a, GPIO_IN);
-    gpio_set_dir(pin_b, GPIO_IN);
-    gpio_pull_up(pin_a);
-    gpio_pull_up(pin_b);
-    
-    // Setup interrupt on pin A (rising and falling edges)
-    gpio_set_irq_enabled_with_callback(pin_a, 
-                                       GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL,
-                                       true, 
-                                       callback);
-    
-    enc->initialized = true;
+void encoder_set_direction(encoder_t *encoder, encoder_direction_t direction) {
+    encoder->direction = direction;
 }
 
-void encoder_init(void) {
-    if (system_initialized) {
-        return;  // Already initialized
-    }
-    
-    // Initialize left encoder (Motor 1)
-    encoder_init_single(&encoders[ENCODER_LEFT], 
-                       MOTOR1_ENCODER_A_PIN, 
-                       MOTOR1_ENCODER_B_PIN,
-                       encoder_left_isr);
-    
-    // Initialize right encoder (Motor 2)
-    encoder_init_single(&encoders[ENCODER_RIGHT],
-                       MOTOR2_ENCODER_A_PIN,
-                       MOTOR2_ENCODER_B_PIN,
-                       encoder_right_isr);
-    
-    system_initialized = true;
-    
-    printf("Wheel encoders initialized\n");
-    printf("  Left Encoder:  A=GP%d, B=GP%d\n", MOTOR1_ENCODER_A_PIN, MOTOR1_ENCODER_B_PIN);
-    printf("  Right Encoder: A=GP%d, B=GP%d\n", MOTOR2_ENCODER_A_PIN, MOTOR2_ENCODER_B_PIN);
-    printf("  Resolution: %.2f mm/pulse\n", MM_PER_PULSE);
+int32_t encoder_get_count(encoder_t *encoder) {
+    return encoder->pulse_count;
 }
 
-void encoder_reset(encoder_id_t encoder) {
-    if (!system_initialized || encoder > ENCODER_RIGHT) {
-        return;
-    }
+uint32_t encoder_get_total_pulses(encoder_t *encoder) {
+    return encoder->total_pulses;
+}
+
+void encoder_reset_count(encoder_t *encoder) {
+    encoder->pulse_count = 0;
+    encoder->total_pulses = 0;
+}
+
+float encoder_get_rpm(encoder_t *encoder) {
+    // Check if stopped (no recent pulse)
+    uint32_t now = time_us_32();
+    uint32_t time_since_pulse = now - encoder->last_pulse_time_us;
     
-    encoders[encoder].count = 0;
-    encoders[encoder].last_pulse_time = 0;
-    encoders[encoder].pulse_period = 0;
-}
-
-void encoder_reset_all(void) {
-    encoder_reset(ENCODER_LEFT);
-    encoder_reset(ENCODER_RIGHT);
-}
-
-int32_t encoder_get_count(encoder_id_t encoder) {
-    if (!system_initialized || encoder > ENCODER_RIGHT) {
-        return 0;
-    }
-    return encoders[encoder].count;
-}
-
-float encoder_get_distance_mm(encoder_id_t encoder) {
-    if (!system_initialized || encoder > ENCODER_RIGHT) {
+    if (time_since_pulse > SPEED_TIMEOUT_US || encoder->pulse_interval_us == 0) {
+        encoder->rpm = 0.0f;
         return 0.0f;
     }
     
-    int32_t count = encoders[encoder].count;
-    return (float)count * MM_PER_PULSE;
+    // RPM calculation:
+    // One pulse takes pulse_interval_us microseconds
+    // One revolution takes (pulses_per_rev * pulse_interval_us) microseconds
+    // RPM = (60,000,000 us/min) / (pulses_per_rev * pulse_interval_us)
+    
+    float revolutions_per_second = 1000000.0f / 
+                                   (encoder->pulses_per_rev * encoder->pulse_interval_us);
+    encoder->rpm = revolutions_per_second * 60.0f;
+    
+    return encoder->rpm;
 }
 
-float encoder_get_speed_rpm(encoder_id_t encoder) {
-    if (!system_initialized || encoder > ENCODER_RIGHT) {
+float encoder_get_speed_cm_per_sec(encoder_t *encoder) {
+    float rpm = encoder_get_rpm(encoder);
+    
+    if (rpm == 0.0f) {
+        encoder->speed_cm_per_sec = 0.0f;
         return 0.0f;
     }
     
-    encoder_state_t *enc = &encoders[encoder];
+    // Convert RPM to cm/s
+    // speed = (RPM / 60) * wheel_circumference
+    encoder->speed_cm_per_sec = (rpm / 60.0f) * WHEEL_CIRCUMFERENCE_CM;
     
-    // Check if we've had a recent pulse
-    uint32_t time_since_last_pulse = time_us_32() - enc->last_pulse_time;
-    if (time_since_last_pulse > SPEED_TIMEOUT_US) {
-        return 0.0f;  // No recent pulse, assume stopped
+    // Apply direction sign
+    if (encoder->direction == ENCODER_DIR_BACKWARD) {
+        encoder->speed_cm_per_sec = -encoder->speed_cm_per_sec;
     }
     
-    if (enc->pulse_period == 0) {
-        return 0.0f;  // No data yet
-    }
-    
-    // Calculate RPM from pulse period
-    // RPM = (60,000,000 / pulse_period_us) / pulses_per_rev
-    float pulses_per_second = 1000000.0f / enc->pulse_period;
-    float rps = pulses_per_second / ENCODER_PULSES_PER_REV;
-    float rpm = rps * 60.0f;
-    
-    return rpm;
+    return encoder->speed_cm_per_sec;
 }
 
-float encoder_get_speed_mmps(encoder_id_t encoder) {
-    float rpm = encoder_get_speed_rpm(encoder);
-    
-    // Convert RPM to mm/s
-    // mm/s = (RPM * circumference) / 60
-    return (rpm * WHEEL_CIRCUMFERENCE_MM) / 60.0f;
+float encoder_get_distance_cm(encoder_t *encoder) {
+    // Distance = (pulse_count / pulses_per_rev) * wheel_circumference
+    encoder->distance_cm = ((float)encoder->pulse_count / encoder->pulses_per_rev) 
+                          * WHEEL_CIRCUMFERENCE_CM;
+    return encoder->distance_cm;
 }
 
-encoder_data_t encoder_get_data(encoder_id_t encoder) {
-    encoder_data_t data = {0};
-    
-    if (!system_initialized || encoder > ENCODER_RIGHT) {
-        return data;
-    }
-    
-    data.count = encoder_get_count(encoder);
-    data.distance_mm = encoder_get_distance_mm(encoder);
-    data.speed_rpm = encoder_get_speed_rpm(encoder);
-    data.last_update = encoders[encoder].last_pulse_time;
-    data.pulse_period = encoders[encoder].pulse_period;
-    
-    return data;
+void encoder_reset_distance(encoder_t *encoder) {
+    encoder->pulse_count = 0;
+    encoder->distance_cm = 0.0f;
 }
 
-void encoder_update_speed(void) {
-    // This function can be called periodically to check for timeout
-    // Speed calculation is done on-demand in encoder_get_speed_rpm()
-    // But we can use this to reset stale data
+void encoder_calibrate(encoder_t *encoder, uint32_t measured_pulses) {
+    encoder->pulses_per_rev = measured_pulses;
+    encoder->is_calibrated = true;
+    printf("[ENCODER] Calibrated: %u pulses/revolution\n", measured_pulses);
+}
+
+void encoder_update(encoder_t *encoder) {
+    // Check for timeout (stopped condition)
+    uint32_t now = time_us_32();
+    uint32_t time_since_pulse = now - encoder->last_pulse_time_us;
     
-    uint32_t current_time = time_us_32();
-    
-    for (int i = 0; i < 2; i++) {
-        uint32_t time_since_pulse = current_time - encoders[i].last_pulse_time;
-        if (time_since_pulse > SPEED_TIMEOUT_US) {
-            // No pulse for a while, reset pulse period
-            encoders[i].pulse_period = 0;
-        }
+    if (time_since_pulse > SPEED_TIMEOUT_US) {
+        encoder->rpm = 0.0f;
+        encoder->speed_cm_per_sec = 0.0f;
     }
 }
 
-bool encoder_is_initialized(void) {
-    return system_initialized;
-}
-
-float encoder_get_average_speed_mmps(void) {
-    float left_speed = encoder_get_speed_mmps(ENCODER_LEFT);
-    float right_speed = encoder_get_speed_mmps(ENCODER_RIGHT);
-    return (left_speed + right_speed) / 2.0f;
-}
-
-float encoder_get_average_distance_mm(void) {
-    float left_dist = encoder_get_distance_mm(ENCODER_LEFT);
-    float right_dist = encoder_get_distance_mm(ENCODER_RIGHT);
-    return (left_dist + right_dist) / 2.0f;
+void encoder_get_diagnostics(encoder_t *encoder, char *buffer, size_t buffer_size) {
+    snprintf(buffer, buffer_size,
+             "GPIO: %u | Pulses: %ld | Total: %lu | RPM: %.1f | Speed: %.2f cm/s | Distance: %.2f cm | Dir: %s",
+             encoder->gpio_pin,
+             encoder->pulse_count,
+             encoder->total_pulses,
+             encoder->rpm,
+             encoder->speed_cm_per_sec,
+             encoder->distance_cm,
+             encoder->direction == ENCODER_DIR_FORWARD ? "FWD" :
+             encoder->direction == ENCODER_DIR_BACKWARD ? "BWD" : "STOP");
 }
