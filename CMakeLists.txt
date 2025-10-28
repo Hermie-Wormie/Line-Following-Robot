@@ -23,11 +23,39 @@ include_directories(
 # COMPONENT TESTS - Individual driver testing
 # ============================================================================
 
-# Motor Encoder Diagnostic Test
+# ============================================================================
+# MOTOR SIMPLE TEST - STANDALONE (NO ENCODERS)
+# ============================================================================
+# This version works WITHOUT wheel encoder dependencies
+# Use this for initial motor testing
+
+add_executable(motor_simple_test
+    tests/motor_simple_test.c
+    src/control/motor_control.c
+    # NOTE: wheel_encoder.c is NOT included to avoid linking errors
+)
+
+target_link_libraries(motor_simple_test
+    pico_stdlib
+    hardware_pwm
+    hardware_gpio
+    hardware_timer
+)
+
+pico_enable_stdio_usb(motor_simple_test 1)
+pico_enable_stdio_uart(motor_simple_test 0)
+pico_add_extra_outputs(motor_simple_test)
+
+# ============================================================================
+# MOTOR + ENCODER TEST (ADVANCED)
+# ============================================================================
+# Use this version AFTER motor simple test works
+# This includes encoder support
+
 add_executable(motor_encoder_test
     tests/motor_encoder_test.c
     src/control/motor_control.c
-    src/control/wheel_encoder.c
+    src/control/wheel_encoder.c    # Now we include encoder
 )
 
 target_link_libraries(motor_encoder_test
@@ -40,12 +68,6 @@ target_link_libraries(motor_encoder_test
 pico_enable_stdio_usb(motor_encoder_test 1)
 pico_enable_stdio_uart(motor_encoder_test 0)
 pico_add_extra_outputs(motor_encoder_test)
-
-# Simple Motor + Encoder Test
-add_executable(motor_simple_test
-    tests/motor_simple_test.c
-    src/control/motor_control.c
-)
 
 target_link_libraries(motor_simple_test
     pico_stdlib
