@@ -80,6 +80,23 @@ pico_enable_stdio_usb(motor_simple_test 1)
 pico_enable_stdio_uart(motor_simple_test 0)
 pico_add_extra_outputs(motor_simple_test)
 
+# Comprehensive Encoder + Motor Test
+add_executable(encoder_motor_test
+    tests/encoder_motor_test.c
+    src/control/motor_control.c
+    src/control/wheel_encoder.c
+)
+
+target_link_libraries(encoder_motor_test
+    pico_stdlib
+    hardware_pwm
+    hardware_gpio
+    hardware_timer
+)
+
+pico_enable_stdio_usb(encoder_motor_test 1)
+pico_enable_stdio_uart(encoder_motor_test 0)
+pico_add_extra_outputs(encoder_motor_test)
 
 # # IR Sensor Basic Test
 # add_executable(test_ir_basic
